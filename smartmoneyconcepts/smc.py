@@ -71,11 +71,11 @@ class smc:
 
         fvg = np.where(
             (
-                (ohlc["high"].shift(1) < ohlc["low"].shift(-1))
+                (ohlc["high"].shift(2) < ohlc["low"])
                 & (ohlc["close"] > ohlc["open"])
             )
             | (
-                (ohlc["low"].shift(1) > ohlc["high"].shift(-1))
+                (ohlc["low"].shift(2) > ohlc["high"])
                 & (ohlc["close"] < ohlc["open"])
             ),
             np.where(ohlc["close"] > ohlc["open"], 1, -1),
@@ -86,8 +86,8 @@ class smc:
             ~np.isnan(fvg),
             np.where(
                 ohlc["close"] > ohlc["open"],
-                ohlc["low"].shift(-1),
-                ohlc["low"].shift(1),
+                ohlc["low"],
+                ohlc["low"].shift(2),
             ),
             np.nan,
         )
@@ -96,8 +96,8 @@ class smc:
             ~np.isnan(fvg),
             np.where(
                 ohlc["close"] > ohlc["open"],
-                ohlc["high"].shift(1),
-                ohlc["high"].shift(-1),
+                ohlc["high"].shift(2),
+                ohlc["high"],
             ),
             np.nan,
         )
@@ -110,28 +110,42 @@ class smc:
                     bottom[i + 1] = min(bottom[i], bottom[i + 1])
                     fvg[i] = top[i] = bottom[i] = np.nan
 
-        mitigated_index = np.zeros(len(ohlc), dtype=np.int32)
-        for i in np.where(~np.isnan(fvg))[0]:
-            mask = np.zeros(len(ohlc), dtype=np.bool_)
-            if fvg[i] == 1:
-                mask = ohlc["low"][i + 2 :] <= top[i]
-            elif fvg[i] == -1:
-                mask = ohlc["high"][i + 2 :] >= bottom[i]
-            if np.any(mask):
-                j = np.argmax(mask) + i + 2
-                mitigated_index[i] = j
+        # Step 4: Initialize mitigated_index as NaN to avoid bias (no assumptions about mitigation yet)
+        mitigated_index = np.full(len(ohlc), np.nan, dtype=np.float64)  # Initialize with NaN
+        
+        for i in np.where(~np.isnan(fvg))[0]:  # Iterate over all FVG indices
+            if i + 2 <= len(ohlc):  # Make sure we don't go out of bounds
+                mask = np.zeros(len(ohlc), dtype=np.bool_)
 
-        mitigated_index = np.where(np.isnan(fvg), np.nan, mitigated_index)
+                if fvg[i] == 1:  # Bullish FVG
+                    mask = ohlc["low"][i + 2:] <= top[i]  # Check if the low is less than or equal to top
+                elif fvg[i] == -1:  # Bearish FVG
+                    mask = ohlc["high"][i + 2:] >= bottom[i]  # Check if the high is greater than or equal to bottom
 
-        return pd.concat(
+                if np.any(mask):  # If a valid mitigation index exists
+                    j = np.argmax(mask) + i + 2  # Find the index where the gap is filled
+                    mitigated_index[i] = j  # Store the index of the mitigation
+
+        # Step 5: Add the gap_filled column based on mitigated_index
+        gap_filled = np.zeros(len(ohlc), dtype=bool)
+        for idx in np.where(~np.isnan(mitigated_index))[0]:
+            mitigated_idx = int(mitigated_index[idx])  # Get the mitigated index
+            if mitigated_idx < len(ohlc):
+                gap_filled[mitigated_idx] = True  # Mark the gap as filled
+
+        # Step 6: Create the result DataFrame
+        return  pd.concat(
             [
                 pd.Series(fvg, name="FVG"),
                 pd.Series(top, name="Top"),
                 pd.Series(bottom, name="Bottom"),
                 pd.Series(mitigated_index, name="MitigatedIndex"),
+                pd.Series(gap_filled, name="gap_filled"),  # Add gap_filled column
             ],
             axis=1,
         )
+
+  
 
     @classmethod
     def swing_highs_lows(cls, ohlc: DataFrame, swing_length: int = 50) -> Series:
